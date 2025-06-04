@@ -9,7 +9,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from ptflops import get_model_complexity_info
-from metrics import calculate_ece
+from utils.metrics import calculate_ece
 from scipy.stats import entropy
 from sklearn.metrics import accuracy_score
 
@@ -17,13 +17,13 @@ warnings.filterwarnings("ignore")
 
 # import argparse
 from args import get_args
-from datasets import get_mnist_loaders, get_cifar10_loaders
-from slt_modules import get_threshold, initialize_params
-from optimizer import get_optimizer
-from scheduler import get_scheduler
-from data_utils import random_noise_data
+from utils.datasets import get_mnist_loaders, get_cifar10_loaders
+from utils.slt_modules import get_threshold, initialize_params
+from utils.optimizer import get_optimizer
+from utils.scheduler import get_scheduler
+from utils.data_utils import random_noise_data
 from models import LeNet, ResNet18
-from set_kthvalue import set_kthvalue
+from utils.set_kthvalue import set_kthvalue
 
 
 def create_checkpoint_path(model_name="lenet", iteration=0, base_dir="checkpoints"):
