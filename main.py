@@ -8,45 +8,22 @@ import warnings
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.optim as optim
 from ptflops import get_model_complexity_info
 from metrics import calculate_ece
-from fvcore.nn import FlopCountAnalysis, flop_count_table
-
 from scipy.stats import entropy
 from sklearn.metrics import accuracy_score
 
 warnings.filterwarnings("ignore")
 
 # import argparse
-
 from args import get_args
 from datasets import get_mnist_loaders, get_cifar10_loaders
-from slt_modules import get_threshold
-
+from slt_modules import get_threshold, initialize_params
+from optimizer import get_optimizer
+from scheduler import get_scheduler
 from data_utils import random_noise_data
 from models import LeNet, ResNet18
-
-
-def count_flops(model, input_size=(1, 1, 28, 28)):
-    # 入力テンソルを準備
-    if isinstance(input_size, torch.Size):
-        input_size = tuple(input_size)
-    device = next(model.parameters()).device
-    dummy_input = torch.zeros(input_size, device=device)
-
-    # モデルを評価モードに設定
-    model.eval()
-
-    # FLOPS計算
-    flops = FlopCountAnalysis(model, dummy_input)
-    print("\nFLOPS Analysis:")
-    print("-" * 80)
-    print(flop_count_table(flops))
-    print(f"Total FLOPS: {flops.total()/1e6:.2f}M")
-    print("-" * 80)
-
-    return flops.total()
+from set_kthvalue import set_kthvalue
 
 
 def create_checkpoint_path(model_name="lenet", iteration=0, base_dir="checkpoints"):
@@ -64,13 +41,18 @@ def mc_predict(model, data, threshold=None, mc_samples=10, slt=False):
     return torch.stack(outputs).mean(0)
 
 
-def train(args, model, device, train_loader, optimizer, epoch, threshold):
+def train(args, model, device, train_loader, optimizer, epoch):
     model.train()
     train_loss = 0
     correct = 0
     total = 0
 
     for _, (data, target) in enumerate(train_loader):
+        if args.slt:
+            threshold = get_threshold(model, epoch, args)
+        else:
+            threshold = None
+
         data, target = data.to(device), target.to(device)
         optimizer.zero_grad()
         output = model(data, threshold) if args.slt else model(data)
@@ -82,6 +64,8 @@ def train(args, model, device, train_loader, optimizer, epoch, threshold):
         pred = output.argmax(dim=1, keepdim=True)
         correct += pred.eq(target.view_as(pred)).sum().item()
         total += target.size(0)
+        if args.partial_frozen_slt:
+            set_kthvalue(model, args.algo, device)
 
     return 100.0 * correct / total
 
@@ -90,14 +74,17 @@ def evaluate(
     args,
     model,
     device,
-    data_loader,
-    phase="val",
-    threshold=None,
+    data_loader
 ):
     model.eval()
     loss = 0
     correct = 0
     total = 0
+
+    if args.slt:
+        threshold = get_threshold(model, args.epochs, args)
+    else:
+        threshold = None
 
     with torch.no_grad():
         for data, target in data_loader:
@@ -133,6 +120,20 @@ def train_iteration(args, device, train_loader, val_loader, test_loader, iterati
     else:
         raise ValueError(f"Unknown model: {args.model}")
 
+    # Initialize parameters for partial frozen SLT
+    if args.partial_frozen_slt:
+        initialize_params(
+            model=model,
+            w_init_method=args.init_mode_weight,
+            s_init_method=args.init_mode_score,
+            m_init_method='epl',
+            p_ratio=args.p_ratio,
+            r_ratio=args.r_ratio,
+            r_method='sparsity_distribution',
+            nonlinearity='relu',
+            algo=args.algo
+        )
+
     # Print model architecture
     if iteration == 0:
         print("-" * 40)
@@ -141,48 +142,55 @@ def train_iteration(args, device, train_loader, val_loader, test_loader, iterati
         print("-" * 40)
 
     # Create optimizer
-    optimizer = optim.SGD(
-        model.parameters(),
-        lr=args.lr,
-        momentum=args.momentum,
-        weight_decay=args.weight_decay,
+    optimizer = get_optimizer(
+        optimizer_name     = args.optimizer_name,
+        lr                 = args.lr,
+        momentum           = args.momentum,
+        weight_decay       = args.weight_decay,
+        model              = model,
+        filter_bias_and_bn = args.filter_bias_and_bn
+        )
+
+    scheduler = get_scheduler(
+        scheduler_name = args.scheduler_name,
+        optimizer      = optimizer,
+        milestones     = args.milestones,
+        gamma          = args.gamma,
+        max_epoch      = args.epochs,
+        min_lr         = args.min_lr,
+        warmup_lr_init = args.warmup_lr_init,
+        warmup_t       = args.warmup_t,
+        warmup_prefix  = args.warmup_prefix
     )
 
     # print training results
     best_val_acc = 0
+    print("-" * 40)
     print("Training Results:")
     print("Epoch, train_acc, val_acc, test_acc")
     print("-" * 40)
 
     # create checkpoint directory
     checkpoint_path = create_checkpoint_path(model_name=args.model, iteration=iteration)
-    
-    # Training loop 
+
+    # Training loop
     for epoch in range(1, args.epochs + 1):
-        
         # train
-        if args.slt:
-            threshold = get_threshold(model, epoch, args)
-        train_acc = train(args, model, device, train_loader, optimizer, epoch, threshold)
+        train_acc = train(args, model, device, train_loader, optimizer, epoch)
+        scheduler.step()
 
         # evaluate
-        if args.slt:
-            threshold = get_threshold(model, epoch, args)
         val_acc = evaluate(
             args,
             model,
             device,
             val_loader,
-            phase="val",
-            threshold=threshold,
         )
         test_acc = evaluate(
             args,
             model,
             device,
             test_loader,
-            phase="test",
-            threshold=threshold,
         )
 
         print(f"{epoch}\t{train_acc:.2f}\t{val_acc:.2f}\t{test_acc:.2f}")
@@ -195,9 +203,14 @@ def train_iteration(args, device, train_loader, val_loader, test_loader, iterati
     # Load best model and evaluate on test set
     model.load_state_dict(torch.load(checkpoint_path, weights_only=True))
     model.eval()
-    threshold = get_threshold(model, args.epochs, args)
+    if args.partial_frozen_slt:
+        set_kthvalue(model, args.algo, device)
+    if args.slt:
+        threshold = get_threshold(model, args.epochs, args)
+    else:
+        threshold = None
 
-    # calculate ECE 
+    # calculate ECE
     all_probs, all_labels = [], []
     with torch.no_grad():
         for data, target in test_loader:
@@ -209,7 +222,7 @@ def train_iteration(args, device, train_loader, val_loader, test_loader, iterati
     all_labels = np.concatenate(all_labels, axis=0)
 
     mean_acc = accuracy_score(all_labels, np.argmax(all_probs, axis=1)) * 100
-    ece = calculate_ece(all_probs, all_labels, num_bins=args.num_bins)
+    ece = calculate_ece(all_probs, all_labels, num_bins=args.num_bins) * 100
 
     # calculate aPE
     x_test_random = random_noise_data(args.dataset).to(device)
@@ -218,11 +231,12 @@ def train_iteration(args, device, train_loader, val_loader, test_loader, iterati
         ape = np.mean(entropy(probs.detach().cpu().numpy(), axis=1))
 
     # calculate FLOPS
-    slt_flag = args.slt
+    slt_flag = args.slt or args.partial_frozen_slt
     if slt_flag:
         pruning_rate = args.pruning_rate[0]
         temp_args = type("Args", (), vars(args))()
         temp_args.slt = False
+        temp_args.partial_frozen_slt = False
     else:
         temp_args = args
 
@@ -255,18 +269,20 @@ def train_iteration(args, device, train_loader, val_loader, test_loader, iterati
     else:
         flops = flops
 
+    flops = flops / 1e6
+
     print("-" * 40)
     print("Final Results")
     print("ECE(%), aPE(nats), Accuracy(%), FLOPS(10^6)")
     print("-" * 40)
-    print(f"{float(ece)*100:.2f}\t{ape:.4f}\t{mean_acc:.2f}\t{flops/1e6:.2f}")
+    print(f"{float(ece):.2f}\t{ape:.4f}\t{mean_acc:.2f}\t{flops:.2f}")
     print("-" * 40)
 
     # Delete the checkpoint file after calculating final results
     if os.path.exists(checkpoint_path):
         os.remove(checkpoint_path)
 
-    return mean_acc, float(ece) * 100, ape, flops / 1e6
+    return mean_acc, ece, ape, flops
 
 
 def main():

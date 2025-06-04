@@ -1,5 +1,5 @@
-*/__pycache__/*
-*/checkpoints/*
-*/logs/*
-*/run/*
-*/scripts/*
+__pycache__/*
+checkpoints/*
+logs/*
+run/*
+scripts/*
