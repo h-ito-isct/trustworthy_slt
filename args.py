@@ -7,10 +7,10 @@ def get_args():
 
     # Model parameters
     parser.add_argument('--model', type=str, default='lenet',
-                        choices=['lenet', 'resnet18'],
+                        choices=['lenet', 'resnet18', 'gcn'],
                         help='model architecture (default: lenet)')
     parser.add_argument('--dataset', type=str, default='mnist',
-                        choices=['mnist', 'cifar10'],
+                        choices=['mnist', 'cifar10', 'cora'],
                         help='dataset to use (default: mnist)')
     parser.add_argument('--num_repeats', type=int, default=1,
                         help='number of repeats (default: 1)')
@@ -90,6 +90,12 @@ def get_args():
                         help='number of Bayesian layers (default: 1)')
     parser.add_argument('--dropout_rate', type=float, default=0.05,
                         help='dropout rate for MC dropout (default: 0.05)')
+
+    # GNN parameters
+    parser.add_argument('--hidden_channels', type=int, default=256,
+                        help='number of hidden channels for GNN (default: 256)')
+    parser.add_argument('--num_layers', type=int, default=4,
+                        help='number of GNN layers (default: 4)')
 
     args = parser.parse_args()
     args.cuda = not args.no_cuda and torch.cuda.is_available()

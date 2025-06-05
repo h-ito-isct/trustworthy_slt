@@ -3,6 +3,17 @@ import torch.nn.functional as F
 from utils.slt_modules import SLT_Conv2d, SLT_Linear
 from utils.slt_modules import PartialFrozenConv2d, PartialFrozenLinear
 from utils.mc_dropout import MC_Dropout
+from torch_geometric.nn.conv import MessagePassing
+from torch_geometric.nn.conv.gcn_conv import gcn_norm
+from typing import Optional, Tuple, Union
+from torch_geometric.typing import OptTensor, OptPairTensor, Adj
+from torch import Tensor, nn
+from torch_sparse import SparseTensor
+from torch_geometric.utils import spmm
+from torch_geometric.nn.inits import zeros
+from torch.nn import Parameter
+import torch
+from torch_geometric.nn.dense.linear import Linear
 
 
 class LeNet(nn.Module):
@@ -339,4 +350,217 @@ class ResNet18(nn.Module):
         layers.append("Output: (10,)")
 
         return "\n".join(layers)
+
+
+class GCN(nn.Module):
+    def __init__(self, args):
+        super(GCN, self).__init__()
+        self.args = args
+        
+        # Get input features and number of classes from dataset
+        if args.dataset == 'cora':
+            self.num_features = 1433
+            self.num_classes = 7
+        else:
+            raise ValueError(f"Unsupported dataset for GCN: {args.dataset}")
+
+        # GCN layers
+        self.convs = nn.ModuleList()
+        self.convs.append(GCNConv(self.num_features, args.hidden_channels, args=args))
+        
+        for _ in range(args.num_layers - 2):
+            self.convs.append(GCNConv(args.hidden_channels, args.hidden_channels, args=args))
+            
+        self.convs.append(GCNConv(args.hidden_channels, self.num_classes, args=args))
+        
+        # Initialize dropout layers for Bayesian inference
+        self.num_bayes_layers = args.num_bayes_layers
+        self.dropout_layers = nn.ModuleList([
+            MC_Dropout(p=args.dropout_rate) for _ in range(self.num_bayes_layers)
+        ])
+        
+    def forward(self, x, edge_index, threshold=None):
+        for i, conv in enumerate(self.convs[:-1]):
+            x = conv(x, edge_index, threshold)
+            x = F.relu(x)
+            # Apply dropout in reverse order from the end of layers
+            dropout_index = self.num_bayes_layers - (self.args.num_layers - i - 1)
+            if dropout_index >= 0 and dropout_index < self.num_bayes_layers:
+                x = self.dropout_layers[dropout_index](x)
+        x = self.convs[-1](x, edge_index, threshold)
+        return F.log_softmax(x, dim=1)
+
+
+class GCNConv(MessagePassing):
+    r"""The graph convolutional operator from the `"Semi-supervised
+    Classification with Graph Convolutional Networks"
+    <https://arxiv.org/abs/1609.02907>`_ paper.
+
+    .. math::
+        \mathbf{X}^{\prime} = \mathbf{\hat{D}}^{-1/2} \mathbf{\hat{A}}
+        \mathbf{\hat{D}}^{-1/2} \mathbf{X} \mathbf{\Theta},
+
+    where :math:`\mathbf{\hat{A}} = \mathbf{A} + \mathbf{I}` denotes the
+    adjacency matrix with inserted self-loops and
+    :math:`\hat{D}_{ii} = \sum_{j=0} \hat{A}_{ij}` its diagonal degree matrix.
+    The adjacency matrix can include other values than :obj:`1` representing
+    edge weights via the optional :obj:`edge_weight` tensor.
+
+    Its node-wise formulation is given by:
+
+    .. math::
+        \mathbf{x}^{\prime}_i = \mathbf{\Theta}^{\top} \sum_{j \in
+        \mathcal{N}(i) \cup \{ i \}} \frac{e_{j,i}}{\sqrt{\hat{d}_j
+        \hat{d}_i}} \mathbf{x}_j
+
+    with :math:`\hat{d}_i = 1 + \sum_{j \in \mathcal{N}(i)} e_{j,i}`, where
+    :math:`e_{j,i}` denotes the edge weight from source node :obj:`j` to target
+    node :obj:`i` (default: :obj:`1.0`)
+
+    Args:
+        in_channels (int): Size of each input sample, or :obj:`-1` to derive
+            the size from the first input(s) to the forward method.
+        out_channels (int): Size of each output sample.
+        improved (bool, optional): If set to :obj:`True`, the layer computes
+            :math:`\mathbf{\hat{A}}` as :math:`\mathbf{A} + 2\mathbf{I}`.
+            (default: :obj:`False`)
+        cached (bool, optional): If set to :obj:`True`, the layer will cache
+            the computation of :math:`\mathbf{\hat{D}}^{-1/2} \mathbf{\hat{A}}
+            \mathbf{\hat{D}}^{-1/2}` on first execution, and will use the
+            cached version for further executions.
+            This parameter should only be set to :obj:`True` in transductive
+            learning scenarios. (default: :obj:`False`)
+        add_self_loops (bool, optional): If set to :obj:`False`, will not add
+            self-loops to the input graph. By default, self-loops will be added
+            in case :obj:`normalize` is set to :obj:`True`, and not added
+            otherwise. (default: :obj:`None`)
+        normalize (bool, optional): Whether to add self-loops and compute
+            symmetric normalization coefficients on-the-fly.
+            (default: :obj:`True`)
+        bias (bool, optional): If set to :obj:`False`, the layer will not learn
+            an additive bias. (default: :obj:`True`)
+        **kwargs (optional): Additional arguments of
+            :class:`torch_geometric.nn.conv.MessagePassing`.
+
+    Shapes:
+        - **input:**
+          node features :math:`(|\mathcal{V}|, F_{in})`,
+          edge indices :math:`(2, |\mathcal{E}|)`
+          or sparse matrix :math:`(|\mathcal{V}|, |\mathcal{V}|)`,
+          edge weights :math:`(|\mathcal{E}|)` *(optional)*
+        - **output:** node features :math:`(|\mathcal{V}|, F_{out})`
+    """
+    _cached_edge_index: Optional[OptPairTensor]
+    _cached_adj_t: Optional[SparseTensor]
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        args=None,
+        improved: bool = False,
+        cached: bool = False,
+        add_self_loops: Optional[bool] = None,
+        normalize: bool = True,
+        bias: bool = True,
+        **kwargs,
+    ):
+        kwargs.setdefault('aggr', 'add')
+        super().__init__(**kwargs)
+
+        if add_self_loops is None:
+            add_self_loops = normalize
+
+        if add_self_loops and not normalize:
+            raise ValueError(f"'{self.__class__.__name__}' does not support "
+                             f"adding self-loops to the graph when no "
+                             f"on-the-fly normalization is applied")
+
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.improved = improved
+        self.cached = cached
+        self.add_self_loops = add_self_loops
+        self.normalize = normalize
+        self.args = args
+        self._cached_edge_index = None
+        self._cached_adj_t = None
+
+        if args.partial_frozen_slt:
+            self.lin = PartialFrozenLinear(
+                in_channels, out_channels, sparsity=args.pruning_rate[0], algo='global_ep', scale_method='dynamic_scaled')
+            self.bias = None
+        elif args.slt:
+            self.lin = SLT_Linear(
+                in_channels, out_channels, args=args
+            )
+            self.bias = None
+        else:
+            self.lin = Linear(in_channels, out_channels, bias=False,
+                          weight_initializer='glorot')
+            if bias:
+                self.bias = Parameter(torch.empty(out_channels))
+                zeros(self.bias)
+            else:
+                self.register_parameter('bias', None)
+            self.reset_parameters()
+            
+    def reset_parameters(self):
+        super().reset_parameters()
+        self.lin.reset_parameters()
+        zeros(self.bias)
+        self._cached_edge_index = None
+        self._cached_adj_t = None
+
+    def forward(self, x: Tensor, edge_index: Adj,
+                edge_weight: OptTensor = None, threshold=None) -> Tensor:
+
+        if isinstance(x, (tuple, list)):
+            raise ValueError(f"'{self.__class__.__name__}' received a tuple "
+                             f"of node features as input while this layer "
+                             f"does not support bipartite message passing. "
+                             f"Please try other layers such as 'SAGEConv' or "
+                             f"'GraphConv' instead")
+
+        if self.normalize:
+            if isinstance(edge_index, Tensor):
+                cache = self._cached_edge_index
+                if cache is None:
+                    edge_index, edge_weight = gcn_norm(  # yapf: disable
+                        edge_index, edge_weight, x.size(self.node_dim),
+                        self.improved, self.add_self_loops, self.flow, x.dtype)
+                    if self.cached:
+                        self._cached_edge_index = (edge_index, edge_weight)
+                else:
+                    edge_index, edge_weight = cache[0], cache[1]
+
+            elif isinstance(edge_index, SparseTensor):
+                cache = self._cached_adj_t
+                if cache is None:
+                    edge_index = gcn_norm(  # yapf: disable
+                        edge_index, edge_weight, x.size(self.node_dim),
+                        self.improved, self.add_self_loops, self.flow, x.dtype)
+                    if self.cached:
+                        self._cached_adj_t = edge_index
+                else:
+                    edge_index = cache
+
+        if self.args.slt:
+            x = self.lin(x, threshold)
+        else:
+            x = self.lin(x)
+
+        # propagate_type: (x: Tensor, edge_weight: OptTensor)
+        out = self.propagate(edge_index, x=x, edge_weight=edge_weight)
+
+        if self.bias is not None:
+            out = out + self.bias
+
+        return out
+
+    def message(self, x_j: Tensor, edge_weight: OptTensor) -> Tensor:
+        return x_j if edge_weight is None else edge_weight.view(-1, 1) * x_j
+
+    def message_and_aggregate(self, adj_t: Adj, x: Tensor) -> Tensor:
+        return spmm(adj_t, x, reduce=self.aggr)
 

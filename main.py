@@ -2,8 +2,6 @@ import datetime
 import os
 import time
 import uuid
-
-# Suppress warnings
 import warnings
 import numpy as np
 import torch
@@ -12,33 +10,19 @@ from ptflops import get_model_complexity_info
 from utils.metrics import calculate_ece
 from scipy.stats import entropy
 from sklearn.metrics import accuracy_score
-
-warnings.filterwarnings("ignore")
-
-# import argparse
 from args import get_args
-from utils.datasets import get_mnist_loaders, get_cifar10_loaders
+from utils.datasets import get_mnist_loaders, get_cifar10_loaders, get_cora_loaders
 from utils.slt_modules import get_threshold, initialize_params
 from utils.optimizer import get_optimizer
 from utils.scheduler import get_scheduler
 from utils.data_utils import random_noise_data
-from models import LeNet, ResNet18
+from models import LeNet, ResNet18, GCN
 from utils.set_kthvalue import set_kthvalue
+from torch.nn import functional as F
+from utils.flops_calc import estimate_gcn_flops
 
 
-def create_checkpoint_path(model_name="lenet", iteration=0, base_dir="checkpoints"):
-    if not os.path.exists(base_dir):
-        os.makedirs(base_dir)
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    pid = os.getpid()
-    uid = uuid.uuid4().hex[:6]
-    checkpoint_path = f"{base_dir}/{model_name}_best_{timestamp}_pid{pid}_{uid}_iter{iteration}.pth"
-    return checkpoint_path
-
-
-def mc_predict(model, data, threshold=None, mc_samples=10, slt=False):
-    outputs = [model(data, threshold) if slt else model(data) for _ in range(mc_samples)]
-    return torch.stack(outputs).mean(0)
+warnings.filterwarnings("ignore")
 
 
 def train(args, model, device, train_loader, optimizer, epoch):
@@ -104,7 +88,7 @@ def evaluate(
     return accuracy
 
 
-def train_iteration(args, device, train_loader, val_loader, test_loader, iteration):
+def train_iteration_cnn(args, device, train_loader, val_loader, test_loader, iteration):
     # print args
     if iteration == 0:
         print("Args:")
@@ -285,6 +269,173 @@ def train_iteration(args, device, train_loader, val_loader, test_loader, iterati
     return mean_acc, ece, ape, flops
 
 
+def train_iteration_gnn(args, device, data, train_mask, val_mask, test_mask, iteration):
+    # print args
+    if iteration == 0:
+        print("Args:")
+        print("-" * 40)
+        for arg in vars(args):
+            print(f"{arg}: {getattr(args, arg)}")
+
+    # Create model
+    model = GCN(args).to(device)
+
+    # Initialize parameters for partial frozen SLT
+    if args.partial_frozen_slt:
+        initialize_params(
+            model=model,
+            w_init_method=args.init_mode_weight,
+            s_init_method=args.init_mode_score,
+            m_init_method='epl',
+            p_ratio=args.p_ratio,
+            r_ratio=args.r_ratio,
+            r_method='sparsity_distribution',
+            nonlinearity='relu',
+            algo=args.algo
+        )
+
+    # Print model architecture
+    if iteration == 0:
+        print("-" * 40)
+        print("Model Architecture:")
+        print(model)
+        print("-" * 40)
+
+    # Create optimizer
+    optimizer = get_optimizer(
+        optimizer_name=args.optimizer_name,
+        lr=args.lr,
+        momentum=args.momentum,
+        weight_decay=args.weight_decay,
+        model=model,
+        filter_bias_and_bn=args.filter_bias_and_bn
+    )
+
+    scheduler = get_scheduler(
+        scheduler_name=args.scheduler_name,
+        optimizer=optimizer,
+        milestones=args.milestones,
+        gamma=args.gamma,
+        max_epoch=args.epochs,
+        min_lr=args.min_lr,
+        warmup_lr_init=args.warmup_lr_init,
+        warmup_t=args.warmup_t,
+        warmup_prefix=args.warmup_prefix
+    )
+
+    # print training results
+    best_val_acc = 0
+    print("-" * 40)
+    print("Training Results:")
+    print("Epoch, train_acc, val_acc, test_acc")
+    print("-" * 40)
+
+    # create checkpoint directory
+    checkpoint_path = create_checkpoint_path(model_name=args.model, iteration=iteration)
+
+    # Training loop
+    for epoch in range(1, args.epochs + 1):
+        # train
+        model.train()
+        optimizer.zero_grad()
+        out = model(data.x, data.edge_index)
+        loss = F.nll_loss(out[train_mask], data.y[train_mask])
+        loss.backward()
+        optimizer.step()
+        scheduler.step()
+
+        # evaluate
+        model.eval()
+        with torch.no_grad():
+            out = model(data.x, data.edge_index)
+            train_acc = (out[train_mask].argmax(dim=1) == data.y[train_mask]).float().mean() * 100
+            val_acc = (out[val_mask].argmax(dim=1) == data.y[val_mask]).float().mean() * 100
+            test_acc = (out[test_mask].argmax(dim=1) == data.y[test_mask]).float().mean() * 100
+
+        print(f"{epoch}\t{train_acc:.2f}\t{val_acc:.2f}\t{test_acc:.2f}")
+
+        # Save best model based on validation accuracy
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            torch.save(model.state_dict(), checkpoint_path)
+
+        if args.partial_frozen_slt:
+            set_kthvalue(model, args.algo, device)
+
+    # Load best model and evaluate on test set
+    model.load_state_dict(torch.load(checkpoint_path, weights_only=True))
+    model.eval()
+    if args.partial_frozen_slt:
+        set_kthvalue(model, args.algo, device)
+    if args.slt:
+        threshold = get_threshold(model, args.epochs, args)
+    else:
+        threshold = None
+
+    # calculate ECE
+    with torch.no_grad():
+        out = model(data.x, data.edge_index, threshold)
+        probs = torch.exp(out[test_mask])
+        all_probs = probs.cpu().numpy()
+        all_labels = data.y[test_mask].cpu().numpy()
+
+    mean_acc = accuracy_score(all_labels, np.argmax(all_probs, axis=1)) * 100
+    ece = calculate_ece(all_probs, all_labels, num_bins=args.num_bins) * 100
+
+    # calculate aPE
+    with torch.no_grad():
+        probs = torch.exp(out[test_mask])
+        ape = np.mean(entropy(probs.cpu().numpy(), axis=1))
+
+    # calculate FLOPS
+    slt_flag = args.slt or args.partial_frozen_slt
+    if slt_flag:
+        pruning_rate = args.pruning_rate[0]
+        temp_args = type("Args", (), vars(args))()
+        temp_args.slt = False
+        temp_args.partial_frozen_slt = False
+    else:
+        temp_args = args
+
+    # Re-Create model
+    temp_model = GCN(temp_args).to(device)
+    temp_model.eval()
+
+    print("-" * 40)
+    flops = estimate_gcn_flops(data, model)
+
+    if slt_flag:
+        flops = flops * (1 - pruning_rate)
+
+    print("-" * 40)
+    print("Final Results")
+    print("ECE(%), aPE(nats), Accuracy(%), FLOPS(10^6)")
+    print("-" * 40)
+    print(f"{float(ece):.2f}\t{ape:.4f}\t{mean_acc:.2f}\t{flops:.2f}")
+    print("-" * 40)
+
+    # Delete the checkpoint file after calculating final results
+    if os.path.exists(checkpoint_path):
+        os.remove(checkpoint_path)
+
+    return mean_acc, ece, ape, flops
+
+
+def create_checkpoint_path(model_name="lenet", iteration=0, base_dir="checkpoints"):
+    if not os.path.exists(base_dir):
+        os.makedirs(base_dir)
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    pid = os.getpid()
+    uid = uuid.uuid4().hex[:6]
+    checkpoint_path = f"{base_dir}/{model_name}_best_{timestamp}_pid{pid}_{uid}_iter{iteration}.pth"
+    return checkpoint_path
+
+
+def mc_predict(model, data, threshold=None, mc_samples=10, slt=False):
+    outputs = [model(data, threshold) if slt else model(data) for _ in range(mc_samples)]
+    return torch.stack(outputs).mean(0)
+
+
 def main():
     # Record start time
     start_time = time.time()
@@ -304,6 +455,8 @@ def main():
         train_loader, val_loader, test_loader = get_mnist_loaders(args)
     elif args.dataset == "cifar10":
         train_loader, val_loader, test_loader = get_cifar10_loaders(args)
+    elif args.dataset == "cora":
+        data, train_mask, val_mask, test_mask = get_cora_loaders(args)
     else:
         raise ValueError(f"Unknown dataset: {args.dataset}")
 
@@ -311,9 +464,14 @@ def main():
     all_results = []
     for i in range(args.num_repeats):
         print(f"\nIteration {i+1}/{args.num_repeats}")
-        test_acc, ece, ape, flops = train_iteration(
-            args, device, train_loader, val_loader, test_loader, i
-        )
+        if args.dataset in ["mnist", "cifar10"]:
+            test_acc, ece, ape, flops = train_iteration_cnn(
+                args, device, train_loader, val_loader, test_loader, i
+            )
+        elif args.dataset == "cora":
+            test_acc, ece, ape, flops = train_iteration_gnn(
+                args, device, data, train_mask, val_mask, test_mask, i
+            )
         all_results.append((test_acc, ece, ape, flops))
 
     # Calculate and print average results

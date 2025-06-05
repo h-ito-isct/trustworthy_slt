@@ -1,6 +1,8 @@
 import torch
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader, random_split
+from torch_geometric.datasets import Planetoid
+from torch_geometric.transforms import NormalizeFeatures
 
 
 ### Change the root to the path of the dataset
@@ -99,3 +101,24 @@ def get_cifar10_loaders(args):
                              num_workers=num_workers, pin_memory=True)
 
     return train_loader, val_loader, test_loader
+
+
+def get_cora_loaders(args):
+    # Load Cora dataset
+    dataset = Planetoid(root=datasets_path, name='Cora', transform=NormalizeFeatures())
+    data = dataset[0]
+    
+    # Move data to device
+    device = torch.device("cuda" if args.cuda else "cpu")
+    data = data.to(device)
+    
+    # Create train, validation, and test masks
+    train_mask = data.train_mask
+    val_mask = data.val_mask
+    test_mask = data.test_mask
+
+    print(f"Train: {train_mask.sum().item()} samples")
+    print(f"Val: {val_mask.sum().item()} samples")
+    print(f"Test: {test_mask.sum().item()} samples")
+
+    return data, train_mask, val_mask, test_mask
