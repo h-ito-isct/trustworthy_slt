@@ -1,8 +1,8 @@
 import numpy as np
 import torch
 
-from slt_modules import PartialFrozenConv2d
-from slt_modules import PartialFrozenLinear
+from utils.slt_modules import PartialFrozenConv2d
+from utils.slt_modules import PartialFrozenLinear
 
 # According to this issue https://github.com/neuralmagic/sparseml/pull/828,
 # it is better to use torch.sort() than torch.kthvalue() if we want to get kthvalue.

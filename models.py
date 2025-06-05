@@ -2,6 +2,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from utils.slt_modules import SLT_Conv2d, SLT_Linear
 from utils.slt_modules import PartialFrozenConv2d, PartialFrozenLinear
+from utils.mc_dropout import MC_Dropout
 
 
 class LeNet(nn.Module):

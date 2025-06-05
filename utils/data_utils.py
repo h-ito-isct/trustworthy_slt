@@ -10,10 +10,10 @@ CIFAR10_std = (0.2023, 0.1994, 0.2010)
 def random_noise_data(dataset):
     """
     Generate random noise dataset with the same statistics as the original dataset.
-    
+
     Args:
         dataset (str): Name of the dataset ("mnist", "cifar10", or "svhn")
-        
+
     Returns:
         torch.Tensor: Random noise data with the same shape and statistics as the original dataset
     """
@@ -32,4 +32,4 @@ def random_noise_data(dataset):
     else:
         raise ValueError(f"Unknown dataset: {dataset}")
 
-            
+

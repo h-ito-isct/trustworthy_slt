@@ -60,8 +60,8 @@ def get_args():
                         help='sparsity for linear layers (default: [0.5])')
     parser.add_argument('--init_mode_weight', type=str, default='signed_kaiming_constant',
                         help='weight initialization mode (default: signed_kaiming_constant)')
-    parser.add_argument('--init_mode_score', type=str, default='kaiming_uniform',
-                        help='score initialization mode (default: kaiming_uniform)')
+    parser.add_argument('--init_mode_score', type=str, default='kaiming_normal',
+                        help='score initialization mode (default: kaiming_normal)')
     parser.add_argument('--init_scale_weight', type=float, default=1.0,
                         help='weight initialization scale (default: 1.0)')
     parser.add_argument('--init_scale_score', type=float, default=1.0,
