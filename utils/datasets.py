@@ -3,13 +3,17 @@ from torchvision import datasets, transforms
 from torch.utils.data import DataLoader, random_split
 
 
+### Change the root to the path of the dataset
+datasets_path = '/work/Shared/Datasets'
+
+
 def get_mnist_loaders(args):
     transform = transforms.Compose([
         transforms.ToTensor()
     ])
 
     train_dataset = datasets.MNIST(
-        root='/work/Shared/Datasets',
+        root=datasets_path,   
         train=True,
         download=True,
         transform=transform
@@ -24,7 +28,7 @@ def get_mnist_loaders(args):
     )
 
     test_dataset = datasets.MNIST(
-        root='/work/Shared/Datasets',
+        root=datasets_path,
         train=False,
         download=True,
         transform=transform
@@ -72,8 +76,8 @@ def get_cifar10_loaders(args):
                              (0.2023, 0.1994, 0.2010)),
     ])
 
-    full_train_dataset = datasets.CIFAR10(root='/work/Shared/Datasets', train=True, download=True, transform=transform_train)
-    test_dataset = datasets.CIFAR10(root='/work/Shared/Datasets', train=False, download=True, transform=transform_test)
+    full_train_dataset = datasets.CIFAR10(root=datasets_path, train=True, download=True, transform=transform_train)
+    test_dataset = datasets.CIFAR10(root=datasets_path, train=False, download=True, transform=transform_test)
 
     train_size = int(0.8 * len(full_train_dataset))
     val_size = len(full_train_dataset) - train_size

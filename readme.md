@@ -35,6 +35,13 @@ Python version: `>=3.x` -->
 ---
 
 ## Usage
+Make sure to modify the dataset path in utils/datasets.py
+
+### utils/datasets.py
+```bash
+# Change the root to the path where your datasets are stored
+datasets_path = '/work/Shared/Datasets'  # <-- change this to your dataset location
+```
 
 Run the experiment with all relevant hyperparameters via the command line:
 
