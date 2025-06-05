@@ -15,7 +15,7 @@ This repository contains the implementation of the SLT experiments for SBCube Me
 
 The following main components are included:
 - `main.py`: Entry point for training and evaluation
-- `models/`: Model and layer definitions
+- `modells.py`: Model and layer definitions
 - `utils/`: Utility functions (including dataset loading, seed setting, etc.)
 
 ---
@@ -25,13 +25,12 @@ The following main components are included:
 Install the experiment environment using:
 
 ```bash
-conda create -n metaml_slt python=3.x
+conda env create -f requirements.yml
 conda activate metaml_slt
-conda install --yes --file requirements.txt
 ```
-
+<!-- 
 **Note:**
-Python version: `>=3.x`
+Python version: `>=3.x` -->
 
 ---
 
@@ -39,20 +38,28 @@ Python version: `>=3.x`
 
 Run the experiment with all relevant hyperparameters via the command line:
 
+### Original SLT
 ```bash
-python main.py               \
---dataset          mnist     \
---model            lenet5    \
---epochs           100       \
---batch_size       128       \
---lr               0.01      \
---seed             0         \
---save_dir         ./results \
---slt_sparsity     0.5       \
---n_dropout_layers 0         \
---p_dropout        0.0       \
---n_samples        1         \
---width_scale      1
+python main.py       \
+--dataset mnist      \
+--model lenet        \
+--slt                \
+--pruning_rate 0.50  \
+--scaling_rate 1.00  \
+--dropout_rate 0.05  \
+--num_bayes_layers 1 \
+```
+
+### Partial Frozen SLT
+```bash
+python main.py       \
+--dataset mnist      \
+--model lenet        \
+--partial_frozen_slt \
+--pruning_rate 0.50  \
+--scaling_rate 1.00  \
+--dropout_rate 0.05  \
+--num_bayes_layers 1 \
 ```
 
 ---
@@ -66,22 +73,32 @@ You can modify the behavior of the script using the following arguments:
 | Argument        | Type     | Default     | Description                                                                 |
 |----------------|----------|-------------|-----------------------------------------------------------------------------|
 | `--dataset`     | `str`    | `mnist`     | Dataset to use (`mnist`)                                        |
-| `--model`       | `str`    | `lenet5`    | Model architecture (`lenet5`)                                              |
+| `--model`       | `str`    | `lenet`    | Model architecture (`lenet5`)                                              |
 | `--epochs`      | `int`    | `100`       | Number of training epochs                                                  |
 | `--batch_size`  | `int`    | `128`       | Batch size for training and evaluation                                     |
-| `--lr`          | `float`  | `0.01`      | Initial learning rate                                                      |
-| `--seed`        | `int`    | `0`         | Random seed for reproducibility                                            |
-| `--save_dir`    | `str`    | `./results` | Directory to save logs and model checkpoints                               |
+| `--lr`          | `float`  | `0.1`      | Initial learning rate                                                      |
+| `--seed`        | `int`    | `110`         | Random seed for reproducibility                                            |
+<!-- | `--save_dir`    | `str`    | `./results` | Directory to save logs and model checkpoints                               | -->
 
-The saved results (in CSV format) are structured as follows:
-`epoch, val_acc, test_acc, model_size, aPE, ECE, FLOPs, MACs`
+The saved results (in log format) are structured as follows:
+`Epoch, train_acc, val_acc, test_acc, ECE, aPE, Accuracy, FLOPS` \
 For example:
 ```
-epoch, val_acc, test_acc, model_size, aPE, ECE, FLOPs, MACs
-0,     10.0,    10.0,     1.0MB,      0.1,  0.1,   100,   100
-1,     11.2,    10.9,     1.0MB,      0.1,  0.1,   100,   100
-2,     13.4,    12.1,     1.0MB,      0.1,  0.1,   100,   100
+----------------------------------------
+Training Results:
+Epoch, train_acc, val_acc, test_acc
+----------------------------------------
+1	10.96	9.69	9.66
+2	11.55	9.88	10.05
+3	12.13	11.37	10.74
 ...
+100	97.58	98.91	98.82
+----------------------------------------
+Final Results
+ECE(%), aPE(nats), Accuracy(%), FLOPS(10^6)
+----------------------------------------
+8.16	1.3642	98.70	5.78
+----------------------------------------
 ```
 
 ---
@@ -90,8 +107,9 @@ epoch, val_acc, test_acc, model_size, aPE, ECE, FLOPs, MACs
 
 | Argument           | Type     | Default | Description                                                                 |
 |--------------------|----------|---------|-----------------------------------------------------------------------------|
-| `--slt_sparsity`   | `float`  | `0.5`   | Global sparsity for the Strong Lottery Ticket (NOTE: We use global EP method for finding SLTs)                |
-| `--n_dropout_layers` | `int`  | `0`     | Number of dropout layers (NOTE: Dropout layers are added in order from the last layer side)        |
-| `--p_dropout`      | `float`  | `0.0`   | Dropout probability for each dropout layer                                 |
-| `--n_samples`      | `int`    | `1`     | Number of Monte Carlo samples used for evaluation                          |
-| `--width_scale`    | `int`    | `1`     | Width multiplier for model layers; scales hidden units or channels by this factor |
+| `--pruning_rate`   | `float`  | `0.5`   | Global sparsity for the Strong Lottery Ticket (NOTE: We use global EP method for finding SLTs) |
+| `--scaling_rate`   | `float`  | `1.0`   | Width multiplier for hidden units or channels by this factor |
+| `--dropout_rate`      | `float`  | `0.05`   | Dropout probability for each dropout layer |
+| `--num_bayes_layers` | `int`  | `1`     | Number of dropout layers (NOTE: Dropout layers are added in order from the last layer side) |
+| `--mc_samples`      | `int`    | `10`     | Number of Monte Carlo samples used for evaluation |
+
