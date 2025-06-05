@@ -64,6 +64,8 @@ python main.py       \
 --model lenet        \
 --partial_frozen_slt \
 --pruning_rate 0.50  \
+--p_ratio 0.25       \
+--r_ratio 0.25       \
 --scaling_rate 1.00  \
 --dropout_rate 0.05  \
 --num_bayes_layers 1 \
@@ -119,4 +121,7 @@ ECE(%), aPE(nats), Accuracy(%), FLOPS(10^6)
 | `--dropout_rate`      | `float`  | `0.05`   | Dropout probability for each dropout layer |
 | `--num_bayes_layers` | `int`  | `1`     | Number of dropout layers (NOTE: Dropout layers are added in order from the last layer side) |
 | `--mc_samples`      | `int`    | `10`     | Number of Monte Carlo samples used for evaluation |
+| `--p_ratio` | `float` | `0.25` | Freezing ratio for pruned weights in Partial Frozen SLT | 
+| `--r_ratio` | `float` | `0.25` | Freezing ratio for retained weights in Partial Frozen SLT | 
 
+Please check args.py for other hyperparameters.
