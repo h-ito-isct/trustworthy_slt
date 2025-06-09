@@ -28,7 +28,17 @@ Install the experiment environment using:
 conda env create -f requirements.yml
 conda activate metaml_slt
 ```
-<!-- 
+
+For GNN experiments, additional packages are required:
+
+```bash
+pip install torch-scatter -f https://data.pyg.org/whl/torch-2.5.1+cu118.html
+pip install torch-sparse -f https://data.pyg.org/whl/torch-2.5.1+cu118.html
+pip install torch-cluster -f https://data.pyg.org/whl/torch-2.5.1+cu118.html
+pip install torch-spline-conv -f https://data.pyg.org/whl/torch-2.5.1+cu118.html
+pip install torch-geometric
+```
+<!--
 **Note:**
 Python version: `>=3.x` -->
 
@@ -121,7 +131,7 @@ ECE(%), aPE(nats), Accuracy(%), FLOPS(10^6)
 | `--dropout_rate`      | `float`  | `0.05`   | Dropout probability for each dropout layer |
 | `--num_bayes_layers` | `int`  | `1`     | Number of dropout layers (NOTE: Dropout layers are added in order from the last layer side) |
 | `--mc_samples`      | `int`    | `10`     | Number of Monte Carlo samples used for evaluation |
-| `--p_ratio` | `float` | `0.25` | Freezing ratio for pruned weights in Partial Frozen SLT | 
-| `--r_ratio` | `float` | `0.25` | Freezing ratio for retained weights in Partial Frozen SLT | 
+| `--p_ratio` | `float` | `0.25` | Freezing ratio for pruned weights in Partial Frozen SLT |
+| `--r_ratio` | `float` | `0.25` | Freezing ratio for retained weights in Partial Frozen SLT |
 
 Please check args.py for other hyperparameters.

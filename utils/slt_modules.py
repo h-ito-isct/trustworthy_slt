@@ -258,7 +258,7 @@ class PartialFrozenLinear(nn.Linear):
         self.score.is_score = True
         self.weight.requires_grad = False
 
-    def forward(self, input):
+    def forward(self, input, threshold=None):
         mask = GetSupermask.apply(
                 self.score.abs(), self.kthvalue.data[0], self.ternary_frozen_mask)
         self.mask = mask

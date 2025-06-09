@@ -1,4 +1,5 @@
 import argparse
+
 import torch
 
 
@@ -12,8 +13,7 @@ def get_args():
     parser.add_argument('--dataset', type=str, default='mnist',
                         choices=['mnist', 'cifar10', 'cora'],
                         help='dataset to use (default: mnist)')
-    parser.add_argument('--num_repeats', type=int, default=1,
-                        help='number of repeats (default: 1)')
+
     parser.add_argument('--batch_size', type=int, default=128,
                         help='input batch size for training (default: 128)')
     parser.add_argument('--epochs', type=int, default=100,
@@ -80,6 +80,8 @@ def get_args():
                         help='random seed (default: 110)')
     parser.add_argument('--no_cuda', action='store_true',
                         help='disables CUDA training')
+    parser.add_argument('--num_repeats', type=int, default=1,
+                        help='number of repeats (default: 1)')
 
     # Bayesian optimization parameters
     parser.add_argument('--mc_samples', type=int, default=10,
